@@ -6,11 +6,6 @@ import torch
 
 
 class ReplayBuffer:
-    """固定容量经验回放缓冲区。
-
-    每条 transition 形如 (s, a, r, s', done)。
-    """
-
     def __init__(self, capacity: int):
         self.capacity = capacity
         self.buffer = deque(maxlen=capacity)
@@ -34,10 +29,6 @@ class ReplayBuffer:
 
 
 def linear_schedule(start: float, end: float, total_steps: int):
-    """返回因变量随 step 从 start 线性降至 end 的调度函数。
-
-    参数 step 需满足 0 <= step <= total_steps，结果截断到不小于 end。
-    """
     slope = (end - start) / total_steps
 
     def schedule(step: int) -> float:

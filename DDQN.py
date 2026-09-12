@@ -13,22 +13,22 @@ from rl_utils import ReplayBuffer, linear_schedule
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="DQN")
-    parser.add_argument("--exp_name", type=str, default="DQN")
+    parser = argparse.ArgumentParser(description="DDQN")
+    parser.add_argument("--exp_name", type=str, default="DDQN")
     parser.add_argument("--env", type=str, default="LunarLander-v3") # CartPole-v1, LunarLander-v3, Acrobot-v1
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--total_timesteps", type=int, default=300000)
+    parser.add_argument("--total_timesteps", type=int, default=1000000)
     parser.add_argument("--buffer_size", type=int, default=10000)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lr", type=float, default=2.5e-4)
     parser.add_argument("--epsilon_start", type=float, default=1.0)
     parser.add_argument("--epsilon_end", type=float, default=0.01)
-    parser.add_argument("--epsilon_decay_steps", type=int, default=150000)
+    parser.add_argument("--epsilon_decay_steps", type=int, default=500000)
     parser.add_argument("--learning_starts", type=int, default=10000)
     parser.add_argument("--train_freq", type=int, default=10, help="每 N 个环境步训练一次")
     parser.add_argument("--target_qnet_update_freq", type=int, default=500,help="目标网络每次同步间隔的环境步数")
-    parser.add_argument("--tau", type=float, default=1.0, help="目标网络更新系数")
+    parser.add_argument("--tau", type=float, default=1, help="目标网络更新系数")
     return parser.parse_args()
 
 
@@ -49,7 +49,7 @@ class QNetwork(nn.Module):
         return self.network(x)
 
 
-class DQNAgent:
+class DDQNAgent:
     def __init__(self, env, args: argparse.Namespace):
         self.action_dim = int(env.action_space.n)
         self.gamma = args.gamma
@@ -77,7 +77,9 @@ class DQNAgent:
 
         q = self.qnet(s).gather(1, a).squeeze(1)
         with torch.no_grad():
-            target_q = r + self.gamma * (1.0 - done) * self.target_qnet(s_).max(dim=1).values
+            # Double DQN：在线 qnet 选动作，目标 target_qnet 估值
+            best_actions = self.qnet(s_).argmax(dim=1, keepdim=True)
+            target_q = r + self.gamma * (1.0 - done) * self.target_qnet(s_).gather(1, best_actions).squeeze(1)
         loss = F.mse_loss(q, target_q)
         self.optimizer.zero_grad()
         loss.backward()
@@ -100,7 +102,7 @@ def train(args: argparse.Namespace) -> None:
     torch.backends.cudnn.benchmark = False
 
     buffer = ReplayBuffer(args.buffer_size)
-    agent = DQNAgent(env, args)
+    agent = DDQNAgent(env, args)
     epsilon_schedule = linear_schedule(args.epsilon_start, args.epsilon_end,
                                        args.epsilon_decay_steps)
 
