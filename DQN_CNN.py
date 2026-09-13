@@ -11,11 +11,21 @@ from torch.utils.tensorboard import SummaryWriter
 
 from rl_utils import ReplayBuffer, linear_schedule
 
+def make_env(env_id: str, seed: int) -> gym.Env:
+    """构建 Atari 图像环境：灰度 84x84 + 每 4 帧执行 1 次动作 + 堆叠 4 帧"""
+    env = gym.make(env_id)
+    env = gym.wrappers.AtariPreprocessing(
+        env, noop_max=10, frame_skip=4, screen_size=84,
+        grayscale_obs=True, terminal_on_life_loss=True,
+    )
+    env = gym.wrappers.FrameStackObservation(env, stack_size=4)
+    return env
+
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="DQN")
-    parser.add_argument("--exp_name", type=str, default="DQN")
-    parser.add_argument("--env", type=str, default="LunarLander-v3") # CartPole-v1, LunarLander-v3, Acrobot-v1
+    parser = argparse.ArgumentParser(description="DQN-CNN")
+    parser.add_argument("--exp_name", type=str, default="DQN-CNN")
+    parser.add_argument("--env", type=str, default="BreakoutNoFrameskip-v4")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--total_timesteps", type=int, default=1000000)
     parser.add_argument("--buffer_size", type=int, default=10000)
@@ -27,26 +37,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epsilon_decay_steps", type=int, default=400000)
     parser.add_argument("--learning_starts", type=int, default=10000)
     parser.add_argument("--train_freq", type=int, default=10, help="每 N 个环境步训练一次")
-    parser.add_argument("--target_qnet_update_freq", type=int, default=500,help="目标网络每次同步间隔的环境步数")
+    parser.add_argument("--target_qnet_update_freq", type=int, default=500, help="目标网络每次同步间隔的环境步数")
     parser.add_argument("--tau", type=float, default=1.0, help="目标网络更新系数")
     return parser.parse_args()
 
 
 class QNetwork(nn.Module):
+    """卷积 Q 网络"""
     def __init__(self, env):
         super().__init__()
-        obs_dim = int(np.array(env.observation_space.shape).prod())
+        obs_shape = env.observation_space.shape
         action_dim = int(env.action_space.n)
-        self.network = nn.Sequential(
-            nn.Linear(obs_dim, 120),
+        self.in_channels, self.h, self.w = obs_shape
+
+        self.conv = nn.Sequential(
+            nn.Conv2d(self.in_channels, 32, kernel_size=8, stride=4),
             nn.ReLU(),
-            nn.Linear(120, 84),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
             nn.ReLU(),
-            nn.Linear(84, action_dim),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU(),
+        )
+        conv_out = self._conv_out_size()
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(conv_out, 512),
+            nn.ReLU(),
+            nn.Linear(512, action_dim),
         )
 
+    def _conv_out_size(self) -> int:
+        dummy = torch.zeros(1, self.in_channels, self.h, self.w)
+        return int(self.conv(dummy).reshape(1, -1).size(1))
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.network(x)
+        return self.fc(self.conv(x))
 
 
 class DQNAgent:
@@ -87,7 +112,7 @@ class DQNAgent:
 
 
 def train(args: argparse.Namespace) -> None:
-    env = gym.make(args.env)
+    env = make_env(args.env, args.seed)
     run_name = f"{args.env}__{args.exp_name}__{args.seed}__{int(time.time())}"
     assert isinstance(env.action_space, gym.spaces.Discrete), "DQN 仅支持离散动作空间"
     # seeding

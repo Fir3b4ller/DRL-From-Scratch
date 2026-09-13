@@ -13,43 +13,48 @@ from rl_utils import ReplayBuffer, linear_schedule
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="DQN")
-    parser.add_argument("--exp_name", type=str, default="DQN")
-    parser.add_argument("--env", type=str, default="LunarLander-v3") # CartPole-v1, LunarLander-v3, Acrobot-v1
+    parser = argparse.ArgumentParser(description="Dueling DQN")
+    parser.add_argument("--exp_name", type=str, default="Dueling-DQN")
+    parser.add_argument("--env", type=str, default="CartPole-v1") # CartPole-v1, LunarLander-v3, Acrobot-v1
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--total_timesteps", type=int, default=1000000)
+    parser.add_argument("--total_timesteps", type=int, default=300000)
     parser.add_argument("--buffer_size", type=int, default=10000)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lr", type=float, default=2.5e-4)
     parser.add_argument("--epsilon_start", type=float, default=1.0)
     parser.add_argument("--epsilon_end", type=float, default=0.01)
-    parser.add_argument("--epsilon_decay_steps", type=int, default=400000)
+    parser.add_argument("--epsilon_decay_steps", type=int, default=150000)
     parser.add_argument("--learning_starts", type=int, default=10000)
     parser.add_argument("--train_freq", type=int, default=10, help="每 N 个环境步训练一次")
-    parser.add_argument("--target_qnet_update_freq", type=int, default=500,help="目标网络每次同步间隔的环境步数")
+    parser.add_argument("--target_qnet_update_freq", type=int, default=500, help="目标网络每次同步间隔的环境步数")
     parser.add_argument("--tau", type=float, default=1.0, help="目标网络更新系数")
     return parser.parse_args()
 
 
 class QNetwork(nn.Module):
+    """Dueling DQN"""
     def __init__(self, env):
         super().__init__()
         obs_dim = int(np.array(env.observation_space.shape).prod())
         action_dim = int(env.action_space.n)
-        self.network = nn.Sequential(
+        self.feature = nn.Sequential(
             nn.Linear(obs_dim, 120),
             nn.ReLU(),
             nn.Linear(120, 84),
             nn.ReLU(),
-            nn.Linear(84, action_dim),
         )
+        self.value = nn.Linear(84, 1)
+        self.advantage = nn.Linear(84, action_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.network(x)
+        feat = self.feature(x)
+        v = self.value(feat)
+        a = self.advantage(feat)
+        return v + (a - a.mean(dim=1, keepdim=True))
 
 
-class DQNAgent:
+class DuelingDQNAgent:
     def __init__(self, env, args: argparse.Namespace):
         self.action_dim = int(env.action_space.n)
         self.gamma = args.gamma
@@ -89,7 +94,7 @@ class DQNAgent:
 def train(args: argparse.Namespace) -> None:
     env = gym.make(args.env)
     run_name = f"{args.env}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    assert isinstance(env.action_space, gym.spaces.Discrete), "DQN 仅支持离散动作空间"
+    assert isinstance(env.action_space, gym.spaces.Discrete), "Dueling DQN 仅支持离散动作空间"
     # seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -100,7 +105,7 @@ def train(args: argparse.Namespace) -> None:
     torch.backends.cudnn.benchmark = False
 
     buffer = ReplayBuffer(args.buffer_size)
-    agent = DQNAgent(env, args)
+    agent = DuelingDQNAgent(env, args)
     epsilon_schedule = linear_schedule(args.epsilon_start, args.epsilon_end,
                                        args.epsilon_decay_steps)
 
