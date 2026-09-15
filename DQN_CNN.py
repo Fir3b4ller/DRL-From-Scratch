@@ -11,43 +11,45 @@ from torch.utils.tensorboard import SummaryWriter
 
 from rl_utils import ReplayBuffer, linear_schedule
 
-def make_env(env_id: str, seed: int) -> gym.Env:
-    """构建 Atari 图像环境：灰度 84x84 + 每 4 帧执行 1 次动作 + 堆叠 4 帧"""
-    env = gym.make(env_id)
-    env = gym.wrappers.AtariPreprocessing(
-        env, noop_max=10, frame_skip=4, screen_size=84,
-        grayscale_obs=True, terminal_on_life_loss=True,
-    )
-    env = gym.wrappers.FrameStackObservation(env, stack_size=4)
-    return env
+
+def make_env(env_id: str):
+    """返回 env 构造函数：灰度 84x84 + 每 4 帧执行 1 次动作 + 堆叠 4 帧"""
+    def thunk() -> gym.Env:
+        env = gym.make(env_id)
+        env = gym.wrappers.AtariPreprocessing(
+            env, noop_max=10, frame_skip=4, screen_size=84,
+            grayscale_obs=True, terminal_on_life_loss=True,
+        )
+        env = gym.wrappers.FrameStack(env, 4)
+        return env
+    return thunk
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="DQN-CNN")
-    parser.add_argument("--exp_name", type=str, default="DQN-CNN")
+    parser = argparse.ArgumentParser(description="D3QN-CNN")
+    parser.add_argument("--exp_name", type=str, default="D3QN-CNN")
     parser.add_argument("--env", type=str, default="BreakoutNoFrameskip-v4")
+    parser.add_argument("--num_envs", type=int, default=4, help="并行环境数量")
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--total_timesteps", type=int, default=1000000)
-    parser.add_argument("--buffer_size", type=int, default=10000)
-    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--total_timesteps", type=int, default=4000000)
+    parser.add_argument("--buffer_size", type=int, default=200000)
+    parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--lr", type=float, default=2.5e-4)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epsilon_start", type=float, default=1.0)
     parser.add_argument("--epsilon_end", type=float, default=0.01)
-    parser.add_argument("--epsilon_decay_steps", type=int, default=400000)
-    parser.add_argument("--learning_starts", type=int, default=10000)
-    parser.add_argument("--train_freq", type=int, default=10, help="每 N 个环境步训练一次")
-    parser.add_argument("--target_qnet_update_freq", type=int, default=500, help="目标网络每次同步间隔的环境步数")
+    parser.add_argument("--epsilon_decay_steps", type=int, default=500000)
+    parser.add_argument("--learning_starts", type=int, default=50000)
+    parser.add_argument("--train_freq", type=int, default=4, help="每 N 个环境步训练一次")
+    parser.add_argument("--target_qnet_update_freq", type=int, default=1000, help="目标网络每次同步间隔的环境步数")
     parser.add_argument("--tau", type=float, default=1.0, help="目标网络更新系数")
     return parser.parse_args()
 
 
 class QNetwork(nn.Module):
-    """卷积 Q 网络"""
-    def __init__(self, env):
+    """Dueling"""
+    def __init__(self, obs_shape, action_dim: int):
         super().__init__()
-        obs_shape = env.observation_space.shape
-        action_dim = int(env.action_space.n)
         self.in_channels, self.h, self.w = obs_shape
 
         self.conv = nn.Sequential(
@@ -58,43 +60,43 @@ class QNetwork(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, stride=1),
             nn.ReLU(),
         )
-        conv_out = self._conv_out_size()
-        self.fc = nn.Sequential(
+        conv_out = 3136
+        self.fc_feature = nn.Sequential(
             nn.Flatten(),
             nn.Linear(conv_out, 512),
             nn.ReLU(),
-            nn.Linear(512, action_dim),
         )
-
-    def _conv_out_size(self) -> int:
-        dummy = torch.zeros(1, self.in_channels, self.h, self.w)
-        return int(self.conv(dummy).reshape(1, -1).size(1))
+        self.value = nn.Linear(512, 1)
+        self.advantage = nn.Linear(512, action_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc(self.conv(x))
+        feat = self.fc_feature(self.conv(x / 255.0))
+        v = self.value(feat)
+        a = self.advantage(feat)
+        return v + (a - a.mean(dim=1, keepdim=True))
 
 
-class DQNAgent:
-    def __init__(self, env, args: argparse.Namespace):
-        self.action_dim = int(env.action_space.n)
+class D3QNAgent:
+    def __init__(self, obs_shape, action_dim: int, args: argparse.Namespace):
+        self.action_dim = action_dim
         self.gamma = args.gamma
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.qnet = QNetwork(env).to(self.device)
-        self.target_qnet = QNetwork(env).to(self.device)
+        self.qnet = QNetwork(obs_shape, action_dim).to(self.device)
+        self.target_qnet = QNetwork(obs_shape, action_dim).to(self.device)
         self.target_qnet.load_state_dict(self.qnet.state_dict())
         self.target_qnet.eval()
 
         self.optimizer = torch.optim.Adam(self.qnet.parameters(), lr=args.lr)
 
     @torch.no_grad()
-    def select_action(self, obs: np.ndarray, epsilon: float) -> int:
-        """epsilon-greedy"""
-        if random.random() < epsilon:
-            return random.randint(0, self.action_dim - 1)
-        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
-        q = self.qnet(obs_t)
-        return int(q.argmax(dim=1).cpu().item())
+    def select_actions(self, obs: np.ndarray, epsilon: float) -> np.ndarray:
+        """批量 epsilon-greedy"""
+        obs_t = torch.as_tensor(np.asarray(obs), dtype=torch.float32, device=self.device)
+        greedy = self.qnet(obs_t).argmax(dim=1).cpu().numpy()
+        explore = np.random.rand(len(greedy)) < epsilon
+        random_actions = np.random.randint(0, self.action_dim, size=len(greedy))
+        return np.where(explore, random_actions, greedy).astype(np.int64)
 
     def update(self, batch) -> tuple[float, float]:
         s, a, r, s_, done = [t.to(self.device) for t in batch]
@@ -102,7 +104,9 @@ class DQNAgent:
 
         q = self.qnet(s).gather(1, a).squeeze(1)
         with torch.no_grad():
-            target_q = r + self.gamma * (1.0 - done) * self.target_qnet(s_).max(dim=1).values
+            # Double DQN
+            best_actions = self.qnet(s_).argmax(dim=1, keepdim=True)
+            target_q = r + self.gamma * (1.0 - done) * self.target_qnet(s_).gather(1, best_actions).squeeze(1)
         loss = F.mse_loss(q, target_q)
         self.optimizer.zero_grad()
         loss.backward()
@@ -110,22 +114,30 @@ class DQNAgent:
 
         return loss.item(), float(q.mean().item())
 
+    @torch.no_grad()
+    def sync_target(self, tau: float) -> None:
+        for p, tp in zip(self.qnet.parameters(), self.target_qnet.parameters()):
+            tp.data.mul_(1.0 - tau).add_(tau * p.data)
+
 
 def train(args: argparse.Namespace) -> None:
-    env = make_env(args.env, args.seed)
+    envs = gym.vector.AsyncVectorEnv([make_env(args.env) for _ in range(args.num_envs)])
     run_name = f"{args.env}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    assert isinstance(env.action_space, gym.spaces.Discrete), "DQN 仅支持离散动作空间"
+    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "DQN 仅支持离散动作空间"
     # seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False
+
+    obs_shape = envs.single_observation_space.shape
+    action_dim = int(envs.single_action_space.n)
 
     buffer = ReplayBuffer(args.buffer_size)
-    agent = DQNAgent(env, args)
+    agent = D3QNAgent(obs_shape, action_dim, args)
     epsilon_schedule = linear_schedule(args.epsilon_start, args.epsilon_end,
                                        args.epsilon_decay_steps)
 
@@ -135,51 +147,71 @@ def train(args: argparse.Namespace) -> None:
         [f"| {k} | {v} |" for k, v in vars(args).items()]
     writer.add_text("hyperparameters", "\n".join(hparams_rows), global_step=0)
 
-    obs, _ = env.reset(seed=args.seed)
-    episode_return, episode_length = 0.0, 0
+    obs, _ = envs.reset(seed=args.seed)
+    episode_returns = np.zeros(args.num_envs, dtype=np.float64)
+    episode_lengths = np.zeros(args.num_envs, dtype=np.int64)
+
     global_step = 0
+    updates_done = 0
+    target_syncs_done = 0
+    td_loss, mean_q = 0.0, 0.0
     last_step, last_time = 0, time.time()
+    last_log_step = 0
 
     while global_step < args.total_timesteps:
         epsilon = epsilon_schedule(global_step)
-        action = agent.select_action(obs, epsilon)
-        next_obs, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
-        buffer.add((obs, action, reward, next_obs, terminated))
+        actions = agent.select_actions(obs, epsilon)
+        next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+
+        # 向量环境会自动 reset 结束的子环境，真实观测在 final_observation 中，
+        real_next_obs = next_obs.copy()
+        for i, truncated in enumerate(truncations):
+            if truncated:
+                real_next_obs[i] = infos["final_observation"][i]
+
+        dones = np.logical_or(terminations, truncations)
+        for i in range(args.num_envs):
+            buffer.add((obs[i], actions[i], rewards[i], real_next_obs[i], terminations[i]))
+
         obs = next_obs
-        episode_return += reward
-        episode_length += 1
-        global_step += 1
+        episode_returns += rewards
+        episode_lengths += 1
+        global_step += args.num_envs
 
         # log episode return and episode length
-        if done:
-            writer.add_scalar("charts/return", episode_return, global_step)
-            writer.add_scalar("charts/length", episode_length, global_step)
-            print(f"global_step={global_step}, episodic_return={episode_return}")
-            obs, _ = env.reset()
-            episode_return, episode_length = 0.0, 0
+        for i in np.flatnonzero(dones):
+            writer.add_scalar("charts/return", episode_returns[i], global_step)
+            writer.add_scalar("charts/length", episode_lengths[i], global_step)
+            print(f"global_step={global_step}, episodic_return={episode_returns[i]}")
+            episode_returns[i] = 0.0
+            episode_lengths[i] = 0
 
         # optimize the model
         if global_step >= args.learning_starts:
-            if global_step % args.train_freq == 0:
+            n_due = (global_step - args.learning_starts) // args.train_freq
+            for _ in range(n_due - updates_done):
                 td_loss, mean_q = agent.update(buffer.sample(args.batch_size))
-                if global_step % 100 == 0:
-                    writer.add_scalar("loss/td_loss", td_loss, global_step)
-                    writer.add_scalar("loss/q_value", mean_q, global_step)
-                    delta_steps = global_step - last_step
-                    elapsed = time.time() - last_time
-                    writer.add_scalar("charts/sps", delta_steps / elapsed, global_step)
-                    print("SPS:", int(delta_steps / elapsed))
-                    last_step, last_time = global_step, time.time()
+                updates_done += 1
 
-            # update target network
-            if global_step % args.target_qnet_update_freq == 0:
-                with torch.no_grad():
-                    for p, tp in zip(agent.qnet.parameters(), agent.target_qnet.parameters()):
-                        tp.data.mul_(1.0 - args.tau).add_(args.tau * p.data)
+            n_sync_due = (global_step - args.learning_starts) // args.target_qnet_update_freq
+            for _ in range(n_sync_due - target_syncs_done):
+                agent.sync_target(args.tau)
+                target_syncs_done += 1
+
+        if global_step - last_log_step >= 100:
+            delta_steps = global_step - last_step
+            elapsed = time.time() - last_time
+            sps = delta_steps / elapsed
+            writer.add_scalar("charts/sps", sps, global_step)
+            if updates_done > 0:
+                writer.add_scalar("loss/td_loss", td_loss, global_step)
+                writer.add_scalar("loss/q_value", mean_q, global_step)
+            print(f"SPS={int(sps)}")
+            last_step, last_time = global_step, time.time()
+            last_log_step = global_step
 
     writer.close()
-    env.close()
+    envs.close()
 
 
 if __name__ == "__main__":
