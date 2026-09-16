@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epsilon_end", type=float, default=0.01)
     parser.add_argument("--epsilon_decay_steps", type=int, default=250000)
     parser.add_argument("--learning_starts", type=int, default=50000)
-    parser.add_argument("--train_freq", type=int, default=10, help="每 N 个环境步训练一次")
+    parser.add_argument("--train_freq", type=int, default=4, help="每 N 个环境步训练一次")
     parser.add_argument("--target_qnet_update_freq", type=int, default=500, help="目标网络每次同步间隔的环境步数")
     parser.add_argument("--tau", type=float, default=1.0, help="目标网络更新系数")
     return parser.parse_args()
