@@ -18,10 +18,10 @@ def make_env(env_id: str):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="REINFORCE")
     parser.add_argument("--exp_name", type=str, default="REINFORCE")
-    parser.add_argument("--env", type=str, default="LunarLander-v2") # CartPole-v1, LunarLander-v2, Acrobot-v1
+    parser.add_argument("--env", type=str, default="CartPole-v1") # CartPole-v1, LunarLander-v2, Acrobot-v1
     parser.add_argument("--num_envs", type=int, default=8)
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--total_timesteps", type=int, default=4000000)
+    parser.add_argument("--total_timesteps", type=int, default=1000000)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lr", type=float, default=2.5e-4)
     return parser.parse_args()
@@ -65,7 +65,6 @@ class ReinforceAgent:
         a = torch.as_tensor(np.stack(actions), dtype=torch.long, device=self.device)
         r = torch.tensor(rewards, dtype=torch.float32, device=self.device)
 
-        # 计算折现回报 G_t
         returns = torch.zeros_like(r)
         g = 0.0
         for t in range(len(r) - 1, -1, -1):
@@ -86,7 +85,7 @@ class ReinforceAgent:
 def train(args: argparse.Namespace) -> None:
     envs = gym.vector.AsyncVectorEnv([make_env(args.env) for _ in range(args.num_envs)])
     run_name = f"{args.env}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "REINFORCE 仅支持离散动作空间"
+    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only supports discrete action spaces"
 
     obs_shape = envs.single_observation_space.shape
     action_dim = int(envs.single_action_space.n)
@@ -100,7 +99,7 @@ def train(args: argparse.Namespace) -> None:
 
     writer = SummaryWriter(f"runs/{run_name}")
     # log hyperparameters
-    hparams_rows = ["| 超参 | 值 |", "|---|---|"] + \
+    hparams_rows = ["| parameters | value |", "|---|---|"] + \
         [f"| {k} | {v} |" for k, v in vars(args).items()]
     writer.add_text("hyperparameters", "\n".join(hparams_rows), global_step=0)
 
@@ -110,7 +109,6 @@ def train(args: argparse.Namespace) -> None:
 
     obs, _ = envs.reset(seed=args.seed)
     global_step = 0
-    policy_loss = 0.0
     last_step, last_time = 0, time.time()
     last_log_step = 0
 
@@ -127,7 +125,6 @@ def train(args: argparse.Namespace) -> None:
         obs = next_obs
         global_step += args.num_envs
 
-        # REINFORCE：每个完成的回合更新一次策略
         for i in np.flatnonzero(dones):
             episode_reward = sum(ep_rewards[i])
             episode_length = len(ep_obs[i])

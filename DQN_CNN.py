@@ -13,7 +13,6 @@ from rl_utils import ReplayBuffer, linear_schedule
 
 
 def make_env(env_id: str):
-    """返回 env 构造函数：灰度 84x84 + 每 4 帧执行 1 次动作 + 堆叠 4 帧"""
     def thunk() -> gym.Env:
         env = gym.make(env_id)
         env = gym.wrappers.AtariPreprocessing(
@@ -29,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="D3QN-CNN")
     parser.add_argument("--exp_name", type=str, default="D3QN-CNN")
     parser.add_argument("--env", type=str, default="BreakoutNoFrameskip-v4")
-    parser.add_argument("--num_envs", type=int, default=4, help="并行环境数量")
+    parser.add_argument("--num_envs", type=int, default=4)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--total_timesteps", type=int, default=4000000)
     parser.add_argument("--buffer_size", type=int, default=200000)
@@ -40,9 +39,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epsilon_end", type=float, default=0.01)
     parser.add_argument("--epsilon_decay_steps", type=int, default=500000)
     parser.add_argument("--learning_starts", type=int, default=50000)
-    parser.add_argument("--train_freq", type=int, default=4, help="每 N 个环境步训练一次")
-    parser.add_argument("--target_qnet_update_freq", type=int, default=1000, help="目标网络每次同步间隔的环境步数")
-    parser.add_argument("--tau", type=float, default=1.0, help="目标网络更新系数")
+    parser.add_argument("--train_freq", type=int, default=4)
+    parser.add_argument("--target_qnet_update_freq", type=int, default=1000)
+    parser.add_argument("--tau", type=float, default=1.0)
     return parser.parse_args()
 
 
@@ -91,7 +90,7 @@ class D3QNAgent:
 
     @torch.no_grad()
     def select_actions(self, obs: np.ndarray, epsilon: float) -> np.ndarray:
-        """批量 epsilon-greedy"""
+        """epsilon-greedy"""
         obs_t = torch.as_tensor(np.asarray(obs), dtype=torch.float32, device=self.device)
         greedy = self.qnet(obs_t).argmax(dim=1).cpu().numpy()
         explore = np.random.rand(len(greedy)) < epsilon
@@ -123,7 +122,7 @@ class D3QNAgent:
 def train(args: argparse.Namespace) -> None:
     envs = gym.vector.AsyncVectorEnv([make_env(args.env) for _ in range(args.num_envs)])
     run_name = f"{args.env}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "DQN 仅支持离散动作空间"
+    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "DQN only supports discrete action spaces"
     # seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -143,7 +142,7 @@ def train(args: argparse.Namespace) -> None:
 
     writer = SummaryWriter(f"runs/{run_name}")
     # log hyperparameters
-    hparams_rows = ["| 超参 | 值 |", "|---|---|"] + \
+    hparams_rows = ["| parameters | value |", "|---|---|"] + \
         [f"| {k} | {v} |" for k, v in vars(args).items()]
     writer.add_text("hyperparameters", "\n".join(hparams_rows), global_step=0)
 
@@ -163,7 +162,7 @@ def train(args: argparse.Namespace) -> None:
         actions = agent.select_actions(obs, epsilon)
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-        # 向量环境会自动 reset 结束的子环境，真实观测在 final_observation 中，
+        # Vector envs auto-reset terminated sub-envs; true obs in `final_observation`
         real_next_obs = next_obs.copy()
         for i, truncated in enumerate(truncations):
             if truncated:

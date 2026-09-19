@@ -26,9 +26,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epsilon_end", type=float, default=0.01)
     parser.add_argument("--epsilon_decay_steps", type=int, default=250000)
     parser.add_argument("--learning_starts", type=int, default=50000)
-    parser.add_argument("--train_freq", type=int, default=4, help="每 N 个环境步训练一次")
-    parser.add_argument("--target_qnet_update_freq", type=int, default=500,help="目标网络每次同步间隔的环境步数")
-    parser.add_argument("--tau", type=float, default=1.0, help="目标网络更新系数")
+    parser.add_argument("--train_freq", type=int, default=4)
+    parser.add_argument("--target_qnet_update_freq", type=int, default=500)
+    parser.add_argument("--tau", type=float, default=1.0)
     return parser.parse_args()
 
 
@@ -77,7 +77,7 @@ class DDQNAgent:
 
         q = self.qnet(s).gather(1, a).squeeze(1)
         with torch.no_grad():
-            # Double DQN：在线 qnet 选动作，目标 target_qnet 估值
+            # Double DQN
             best_actions = self.qnet(s_).argmax(dim=1, keepdim=True)
             target_q = r + self.gamma * (1.0 - done) * self.target_qnet(s_).gather(1, best_actions).squeeze(1)
         loss = F.mse_loss(q, target_q)
@@ -91,7 +91,7 @@ class DDQNAgent:
 def train(args: argparse.Namespace) -> None:
     env = gym.make(args.env)
     run_name = f"{args.env}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    assert isinstance(env.action_space, gym.spaces.Discrete), "DQN 仅支持离散动作空间"
+    assert isinstance(env.action_space, gym.spaces.Discrete), "DQN only supports discrete action spaces"
     # seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -108,7 +108,7 @@ def train(args: argparse.Namespace) -> None:
 
     writer = SummaryWriter(f"runs/{run_name}")
     # log hyperparameters
-    hparams_rows = ["| 超参 | 值 |", "|---|---|"] + \
+    hparams_rows = ["| parameters | value |", "|---|---|"] + \
         [f"| {k} | {v} |" for k, v in vars(args).items()]
     writer.add_text("hyperparameters", "\n".join(hparams_rows), global_step=0)
 

@@ -18,9 +18,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="REINFORCE-continuous")
     parser.add_argument("--exp_name", type=str, default="REINFORCE-continuous")
     parser.add_argument("--env", type=str, default="LunarLanderContinuous-v2") #LunarLanderContinuous-v2
-    parser.add_argument("--num_envs", type=int, default=8, help="并行环境数量")
+    parser.add_argument("--num_envs", type=int, default=8)
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--total_timesteps", type=int, default=3000000)
+    parser.add_argument("--total_timesteps", type=int, default=5000000)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lr", type=float, default=2.5e-4)
     return parser.parse_args()
@@ -103,7 +103,7 @@ def train(args: argparse.Namespace) -> None:
 
     writer = SummaryWriter(f"runs/{run_name}")
     # log hyperparameters
-    hparams_rows = ["| 超参 | 值 |", "|---|---|"] + \
+    hparams_rows = ["| parameters | value |", "|---|---|"] + \
         [f"| {k} | {v} |" for k, v in vars(args).items()]
     writer.add_text("hyperparameters", "\n".join(hparams_rows), global_step=0)
 
@@ -113,7 +113,6 @@ def train(args: argparse.Namespace) -> None:
 
     obs, _ = envs.reset(seed=args.seed)
     global_step = 0
-    policy_loss = 0.0
     last_step, last_time = 0, time.time()
     last_log_step = 0
 
@@ -130,7 +129,6 @@ def train(args: argparse.Namespace) -> None:
         obs = next_obs
         global_step += args.num_envs
 
-        # REINFORCE：每个完成的回合更新一次策略
         for i in np.flatnonzero(dones):
             episode_reward = sum(ep_rewards[i])
             episode_length = len(ep_obs[i])
