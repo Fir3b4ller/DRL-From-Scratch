@@ -8,20 +8,26 @@ import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 
 
-def make_env(env_id: str):
+def make_env(env_id: str, gamma):
     def thunk() -> gym.Env:
-        return gym.make(env_id)
+        env = gym.make(env_id)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        env = gym.wrappers.NormalizeObservation(env)
+        env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10))
+        env = gym.wrappers.NormalizeReward(env, gamma=gamma)
+        env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
+        return env
     return thunk
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="REINFORCE-continuous")
     parser.add_argument("--exp_name", type=str, default="REINFORCE-continuous")
-    parser.add_argument("--env", type=str, default="LunarLanderContinuous-v2") #LunarLanderContinuous-v2
-    parser.add_argument("--num_envs", type=int, default=8)
+    parser.add_argument("--env", type=str, default="LunarLanderContinuous-v2") # LunarLanderContinuous-v2
+    parser.add_argument("--num_envs", type=int, default=16)
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--total_timesteps", type=int, default=5000000)
-    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--total_timesteps", type=int, default=2000000)
+    parser.add_argument("--gamma", type=float, default=0.999)
     parser.add_argument("--lr", type=float, default=2.5e-4)
     return parser.parse_args()
 
@@ -66,7 +72,6 @@ class ReinforceContinuousAgent:
         a = torch.as_tensor(np.stack(actions), dtype=torch.float32, device=self.device)
         r = torch.tensor(rewards, dtype=torch.float32, device=self.device)
 
-        # G_t
         returns = torch.zeros_like(r)
         g = 0.0
         for t in range(len(r) - 1, -1, -1):
@@ -86,9 +91,9 @@ class ReinforceContinuousAgent:
 
 
 def train(args: argparse.Namespace) -> None:
-    envs = gym.vector.AsyncVectorEnv([make_env(args.env) for _ in range(args.num_envs)])
+    envs = gym.vector.AsyncVectorEnv([make_env(args.env, args.gamma) for _ in range(args.num_envs)])
     run_name = f"{args.env}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "REINFORCE-continuous 仅支持连续动作空间"
+    assert isinstance(envs.single_action_space, gym.spaces.Box), "only supports discrete action spaces"
 
     obs_shape = envs.single_observation_space.shape
     action_dim = int(envs.single_action_space.shape[0])
@@ -130,8 +135,8 @@ def train(args: argparse.Namespace) -> None:
         global_step += args.num_envs
 
         for i in np.flatnonzero(dones):
-            episode_reward = sum(ep_rewards[i])
-            episode_length = len(ep_obs[i])
+            episode_reward = float(infos["final_info"][i]["episode"]["r"])
+            episode_length = int(infos["final_info"][i]["episode"]["l"])
             policy_loss = agent.update(ep_obs[i], ep_actions[i], ep_rewards[i])
             writer.add_scalar("charts/return", episode_reward, global_step)
             writer.add_scalar("charts/length", episode_length, global_step)
@@ -141,7 +146,7 @@ def train(args: argparse.Namespace) -> None:
             ep_actions[i].clear()
             ep_rewards[i].clear()
 
-        if global_step - last_log_step >= 100:
+        if global_step - last_log_step >= 2000:
             delta_steps = global_step - last_step
             elapsed = time.time() - last_time
             sps = delta_steps / elapsed

@@ -15,7 +15,7 @@ from rl_utils import ReplayBuffer, linear_schedule
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="DQN")
     parser.add_argument("--exp_name", type=str, default="DQN")
-    parser.add_argument("--env", type=str, default="Acrobot-v1") # CartPole-v1, LunarLander-v2, Acrobot-v1
+    parser.add_argument("--env", type=str, default="Acrobot-v1") # CartPole-v1, LunarLander-v2, Acrobot-v1, MountainCar-v0
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--total_timesteps", type=int, default=300000)
     parser.add_argument("--buffer_size", type=int, default=10000)

@@ -15,20 +15,20 @@ from rl_utils import ReplayBuffer, linear_schedule
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="DDQN")
     parser.add_argument("--exp_name", type=str, default="DDQN")
-    parser.add_argument("--env", type=str, default="LunarLander-v2") # CartPole-v1, LunarLander-v2, Acrobot-v1
+    parser.add_argument("--env", type=str, default="MountainCar-v0") # CartPole-v1, LunarLander-v2, Acrobot-v1, MountainCar-v0
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--total_timesteps", type=int, default=2000000)
+    parser.add_argument("--total_timesteps", type=int, default=1000000)
     parser.add_argument("--buffer_size", type=int, default=100000)
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lr", type=float, default=2.5e-4)
     parser.add_argument("--epsilon_start", type=float, default=1.0)
     parser.add_argument("--epsilon_end", type=float, default=0.01)
-    parser.add_argument("--epsilon_decay_steps", type=int, default=250000)
-    parser.add_argument("--learning_starts", type=int, default=50000)
+    parser.add_argument("--epsilon_decay_steps", type=int, default=10000)
+    parser.add_argument("--learning_starts", type=int, default=10000)
     parser.add_argument("--train_freq", type=int, default=4)
     parser.add_argument("--target_qnet_update_freq", type=int, default=500)
-    parser.add_argument("--tau", type=float, default=1.0)
+    parser.add_argument("--tau", type=float, default=1)
     return parser.parse_args()
 
 
@@ -140,7 +140,7 @@ def train(args: argparse.Namespace) -> None:
         if global_step >= args.learning_starts:
             if global_step % args.train_freq == 0:
                 td_loss, mean_q = agent.update(buffer.sample(args.batch_size))
-                if global_step % 100 == 0:
+                if global_step % 2000 == 0:
                     writer.add_scalar("loss/td_loss", td_loss, global_step)
                     writer.add_scalar("loss/q_value", mean_q, global_step)
                     delta_steps = global_step - last_step
