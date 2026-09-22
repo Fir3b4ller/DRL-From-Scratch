@@ -18,8 +18,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="A2C")
     parser.add_argument("--exp_name", type=str, default="A2C")
     parser.add_argument("--env", type=str, default="CartPole-v1") # CartPole-v1, LunarLander-v2, Acrobot-v1
-    parser.add_argument("--num_envs", type=int, default=8)
-    parser.add_argument("--num_steps", type=int, default=5)
+    parser.add_argument("--num_envs", type=int, default=16)
+    parser.add_argument("--num_steps", type=int, default=128)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--total_timesteps", type=int, default=1000000)
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -27,7 +27,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ent_coef", type=float, default=0.01)
     parser.add_argument("--vf_coef", type=float, default=0.5)
     parser.add_argument("--max_grad_norm", type=float, default=0.5)
-    parser.add_argument("--anneal_lr", type=bool, default=True)
+    parser.add_argument("--anneal_lr", type=bool, default=False)
+    parser.add_argument("--gae_lambda", type=float, default=0.95)
     return parser.parse_args()
 
 
@@ -67,6 +68,7 @@ class A2CAgent:
         self.ent_coef = args.ent_coef
         self.vf_coef = args.vf_coef
         self.max_grad_norm = args.max_grad_norm
+        self.gae_lambda = args.gae_lambda
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         obs_dim = int(np.array(obs_shape).prod())
@@ -88,35 +90,34 @@ class A2CAgent:
             group["lr"] = lr
 
     def update(self, obs, actions, rewards, dones, last_obs):
-        """n步自举 A2C: returns 用 critic 引导，advantage = returns - V(s)"""
-        # obs/rewards/actions/dones: (num_steps, num_envs, ...)
-        T, B = obs.shape[0], obs.shape[1]
+        num_steps, num_envs = obs.shape[0], obs.shape[1]
         s = torch.as_tensor(np.asarray(obs), dtype=torch.float32, device=self.device)
-        s_flat = s.reshape(-1, s.shape[-1])
         a = torch.as_tensor(np.asarray(actions), dtype=torch.long, device=self.device)
         r = torch.as_tensor(np.asarray(rewards), dtype=torch.float32, device=self.device)
         done = torch.as_tensor(np.asarray(dones), dtype=torch.float32, device=self.device)
 
-        logits = self.actor(s_flat).reshape(T, B, -1)
+        logits = self.actor(s)
         dist = torch.distributions.Categorical(logits=logits)
-        log_probs = dist.log_prob(a)   # (T, B)
+        log_probs = dist.log_prob(a)
         entropy = dist.entropy().mean()
+        values = self.critic(s)
 
-        values = self.critic(s_flat).reshape(T, B)
         with torch.no_grad():
             s_last = torch.as_tensor(np.asarray(last_obs), dtype=torch.float32, device=self.device)
-            next_value = self.critic(s_last)   # (B,)
-            returns = torch.zeros_like(r)
-            gae = next_value
-            for t in reversed(range(T)):
-                # 截断(truncation)不砍自举，只用真实终止(termination)
-                gae = r[t] + self.gamma * gae * (1.0 - done[t])
-                returns[t] = gae
-            advantage = returns - values
+            next_value = self.critic(s_last)
+            advantage = torch.zeros_like(r)
+            gae = torch.zeros_like(next_value)
+            for t in reversed(range(num_steps)):
+                v_next = next_value if t == num_steps - 1 else values[t + 1]
+                delta = r[t] + self.gamma * v_next * (1.0 - done[t]) - values[t]
+                gae = delta + self.gamma * self.gae_lambda * (1.0 - done[t]) * gae
+                advantage[t] = gae
+            returns = (advantage + values).detach()
+            advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
 
-        actor_loss = -(log_probs * advantage.detach()).mean() - self.ent_coef * entropy
-        critic_loss = 0.5 * advantage.pow(2).mean()
-        loss = actor_loss + self.vf_coef * critic_loss
+        actor_loss = -(log_probs * advantage.detach()).mean()
+        critic_loss = 0.5 * (returns - values).pow(2).mean()
+        loss = actor_loss + self.vf_coef * critic_loss - self.ent_coef * entropy
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -169,7 +170,7 @@ def train(args: argparse.Namespace) -> None:
             rollout_obs.append(obs.copy())
             rollout_actions.append(actions)
             rollout_rewards.append(rewards)
-            rollout_dones.append(terminations)
+            rollout_dones.append(dones)
 
             for i in range(args.num_envs):
                 ep_rewards[i].append(rewards[i])
@@ -199,7 +200,7 @@ def train(args: argparse.Namespace) -> None:
             frac = 1.0 - global_step / args.total_timesteps
             lr_now = args.lr * frac
             agent.set_lr(lr_now)
-            writer.add_scalar("charts/learning_rate", lr_now, global_step)
+            writer.add_scalar("charts/learn_rate", lr_now, global_step)
 
         actor_loss, critic_loss, entropy = agent.update(
             np.stack(rollout_obs),

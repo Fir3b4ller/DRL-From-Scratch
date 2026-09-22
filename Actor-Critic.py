@@ -158,7 +158,7 @@ def train(args: argparse.Namespace) -> None:
             rollout_actions.append(actions)
             rollout_rewards.append(rewards)
             rollout_next_obs.append(next_obs)
-            rollout_dones.append(terminations)
+            rollout_dones.append(dones)
 
             for i in range(args.num_envs):
                 ep_rewards[i].append(rewards[i])
@@ -188,7 +188,7 @@ def train(args: argparse.Namespace) -> None:
             frac = 1.0 - global_step / args.total_timesteps
             lr_now = args.lr * frac
             agent.set_lr(lr_now)
-            writer.add_scalar("charts/learning_rate", lr_now, global_step)
+            writer.add_scalar("charts/learn_rate", lr_now, global_step)
 
         actor_loss, critic_loss, entropy = agent.update(
             np.stack(rollout_obs),
