@@ -17,13 +17,13 @@ def make_env(env_id: str):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="A2C")
     parser.add_argument("--exp_name", type=str, default="A2C")
-    parser.add_argument("--env", type=str, default="CartPole-v1") # CartPole-v1, LunarLander-v2, Acrobot-v1
+    parser.add_argument("--env", type=str, default="LunarLander-v2") # CartPole-v1, LunarLander-v2, Acrobot-v1
     parser.add_argument("--num_envs", type=int, default=16)
-    parser.add_argument("--num_steps", type=int, default=128)
+    parser.add_argument("--num_steps", type=int, default=16)
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--total_timesteps", type=int, default=1000000)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--lr", type=float, default=2.5e-4)
+    parser.add_argument("--total_timesteps", type=int, default=10000000)
+    parser.add_argument("--gamma", type=float, default=0.999)
+    parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--ent_coef", type=float, default=0.01)
     parser.add_argument("--vf_coef", type=float, default=0.5)
     parser.add_argument("--max_grad_norm", type=float, default=0.5)
@@ -102,6 +102,7 @@ class A2CAgent:
         entropy = dist.entropy().mean()
         values = self.critic(s)
 
+        # GAE advantage
         with torch.no_grad():
             s_last = torch.as_tensor(np.asarray(last_obs), dtype=torch.float32, device=self.device)
             next_value = self.critic(s_last)
