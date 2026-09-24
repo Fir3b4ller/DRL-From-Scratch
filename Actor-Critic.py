@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ent_coef", type=float, default=0.1)
     parser.add_argument("--vf_coef", type=float, default=0.5)
     parser.add_argument("--max_grad_norm", type=float, default=0.5)
-    parser.add_argument("--anneal_lr", type=bool, default=True)
+    parser.add_argument("--anneal_lr", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args()
 
 

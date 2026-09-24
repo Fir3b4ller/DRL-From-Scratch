@@ -18,12 +18,12 @@ def make_env(env_id: str):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="TRPO")
     parser.add_argument("--exp_name", type=str, default="TRPO")
-    parser.add_argument("--env", type=str, default="LunarLander-v2") # CartPole-v1, LunarLander-v2, Acrobot-v1
+    parser.add_argument("--env", type=str, default="CartPole-v1") # CartPole-v1, LunarLander-v2, Acrobot-v1
     parser.add_argument("--num_envs", type=int, default=16)
     parser.add_argument("--num_steps", type=int, default=128)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--total_timesteps", type=int, default=10000000)
-    parser.add_argument("--gamma", type=float, default=0.999)
+    parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae_lambda", type=float, default=0.95)
     # TRPO specific
     parser.add_argument("--kl_limit", type=float, default=0.01)
