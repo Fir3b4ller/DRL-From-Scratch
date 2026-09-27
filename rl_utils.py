@@ -21,7 +21,7 @@ class ReplayBuffer:
         s, a, r, s_, done = map(np.stack, zip(*batch))
         return (
             torch.as_tensor(s, dtype=torch.float32),
-            torch.as_tensor(a, dtype=torch.long),
+            torch.as_tensor(a),
             torch.as_tensor(r, dtype=torch.float32),
             torch.as_tensor(s_, dtype=torch.float32),
             torch.as_tensor(done, dtype=torch.float32),
