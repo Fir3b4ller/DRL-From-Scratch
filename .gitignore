@@ -179,3 +179,26 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# ------------------------------------------------------------------------------
+# Project-specific
+# ------------------------------------------------------------------------------
+
+# IDE / editor config
+.idea/
+.claude/
+.vscode/
+
+# Training outputs and logs
+runs/
+exp_result/
+*.tfevents.*
+events.out.tfevents.*
+
+# Personal notes (not for public release)
+面经.md
+
+# Checkpoint / model files
+*.pt
+*.pth
+*.onnx

@@ -82,6 +82,8 @@ class DDPGAgent:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.action_center = torch.as_tensor(action_center, dtype=torch.float32, device=self.device)
         self.action_scale = torch.as_tensor(action_scale, dtype=torch.float32, device=self.device)
+        self.action_low = torch.as_tensor(action_center - action_scale, dtype=torch.float32, device=self.device)
+        self.action_high = torch.as_tensor(action_center + action_scale, dtype=torch.float32, device=self.device)
         self.gamma = args.gamma
         self.tau = args.tau
         self.exploration_noise = args.exploration_noise
@@ -104,6 +106,7 @@ class DDPGAgent:
         action = self.actor(obs_t)
         action = self.action_center + action * self.action_scale
         action += torch.randn_like(action) * self.action_scale * self.exploration_noise
+        action = torch.clamp(action, self.action_low, self.action_high)
         return action.cpu().numpy().squeeze(0)
 
     def update(self, batch, update_actor: bool):

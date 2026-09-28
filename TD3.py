@@ -29,18 +29,19 @@ def make_env(env_id: str, gamma, normalize: bool):
 def parse_args():
     parser = argparse.ArgumentParser(description="TD3")
     parser.add_argument("--exp_name", type=str, default="TD3")
-    parser.add_argument("--env", type=str, default="LunarLanderContinuous-v2")
+    parser.add_argument("--env", type=str, default="Ant-v4")
     # Pendulum-v1, LunarLanderContinuous-v2, BipedalWalker-v3, Walker2d-v4, HalfCheetah-v4, Ant-v4, Swimmer-v4, Hopper-v4
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--total_timesteps", type=int, default=500000)
-    parser.add_argument("--buffer_size", type=int, default=50000)
+    parser.add_argument("--total_timesteps", type=int, default=2000000)
+    parser.add_argument("--buffer_size", type=int, default=1000000)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--tau", type=float, default=0.005)
+    parser.add_argument("--exploration_noise", type=float, default=0.1)
     parser.add_argument("--policy_noise", type=float, default=0.2)
     parser.add_argument("--noise_clip", type=float, default=0.5)
-    parser.add_argument("--learning_starts", type=int, default=10000)
+    parser.add_argument("--learning_starts", type=int, default=25000)
     parser.add_argument("--train_freq", type=int, default=1)
     parser.add_argument("--policy_freq", type=int, default=2)
     parser.add_argument("--normalize", action=argparse.BooleanOptionalAction, default=False)
@@ -79,14 +80,15 @@ class CriticNetwork(nn.Module):
 
 
 class TD3Agent:
-    def __init__(self, obs_shape, action_dim: int, action_center, action_scale, args: argparse.Namespace):
+    def __init__(self, obs_shape, action_dim: int, action_low, action_high, args: argparse.Namespace):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.action_center = torch.as_tensor(action_center, dtype=torch.float32, device=self.device)
-        self.action_scale = torch.as_tensor(action_scale, dtype=torch.float32, device=self.device)
-        self.action_low = torch.as_tensor(action_center - action_scale, dtype=torch.float32, device=self.device)
-        self.action_high = torch.as_tensor(action_center + action_scale, dtype=torch.float32, device=self.device)
+        self.action_low = torch.as_tensor(action_low, dtype=torch.float32, device=self.device)
+        self.action_high = torch.as_tensor(action_high, dtype=torch.float32, device=self.device)
+        self.action_center = (self.action_low + self.action_high) / 2.0
+        self.action_scale = (self.action_high - self.action_low) / 2.0
         self.gamma = args.gamma
         self.tau = args.tau
+        self.exploration_noise = args.exploration_noise
         self.policy_noise = args.policy_noise
         self.noise_clip = args.noise_clip
 
@@ -102,26 +104,24 @@ class TD3Agent:
         self.target_critic2.load_state_dict(self.critic2.state_dict())
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=args.lr)
-        self.critic1_optimizer = torch.optim.Adam(self.critic1.parameters(), lr=args.lr)
-        self.critic2_optimizer = torch.optim.Adam(self.critic2.parameters(), lr=args.lr)
-
-    def _convert(self, u: torch.Tensor) -> torch.Tensor:
-        """map tanh output u in [-1, 1] to the real action space"""
-        return self.action_center + u * self.action_scale
+        self.critic_optimizer = torch.optim.Adam(list(self.critic1.parameters()) + list(self.critic2.parameters()), lr=args.lr)
 
     @torch.no_grad()
-    def select_action(self, obs: np.ndarray) -> np.ndarray:
-        """deterministic policy (no exploration noise; handled by target smoothing)"""
+    def select_action(self, obs: np.ndarray):
+        """deterministic policy + Gaussian exploration noise"""
         obs_t = torch.as_tensor(np.asarray(obs), dtype=torch.float32, device=self.device).unsqueeze(0)
-        action = self._convert(self.actor(obs_t))
+        action = self.actor(obs_t)
+        action = self.action_center + action * self.action_scale
+        action += torch.randn_like(action) * self.action_scale * self.exploration_noise
+        action = torch.clamp(action, self.action_low, self.action_high)
         return action.cpu().numpy().squeeze(0)
 
     def update(self, batch, update_actor: bool):
         s, a, r, s_, done = [t.to(self.device) for t in batch]
 
-        # twin critic target: target policy smoothing + min(Q1', Q2')
+        # twin critic target
         with torch.no_grad():
-            next_action = self._convert(self.target_actor(s_))
+            next_action = self.action_center + self.target_actor(s_) * self.action_scale
             noise = torch.randn_like(next_action) * self.policy_noise
             noise = torch.clamp(noise, -self.noise_clip, self.noise_clip)
             next_action = torch.clamp(next_action + noise, self.action_low, self.action_high)
@@ -129,22 +129,20 @@ class TD3Agent:
                 self.target_critic1(s_, next_action), self.target_critic2(s_, next_action)
             )
 
-        # critic loss (both critics)
+        # critic loss
         q1 = self.critic1(s, a)
         q2 = self.critic2(s, a)
         critic1_loss = F.mse_loss(q1, target_q)
         critic2_loss = F.mse_loss(q2, target_q)
-        self.critic1_optimizer.zero_grad()
-        critic1_loss.backward()
-        self.critic1_optimizer.step()
-        self.critic2_optimizer.zero_grad()
-        critic2_loss.backward()
-        self.critic2_optimizer.step()
+        critic_loss = critic1_loss + critic2_loss
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic_optimizer.step()
 
-        # delayed actor / target updates
+        # delayed actor updates
         actor_loss = None
         if update_actor:
-            actor_loss = -self.critic1(s, self._convert(self.actor(s))).mean()
+            actor_loss = -self.critic1(s, self.action_center + self.actor(s) * self.action_scale).mean()
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
             self.actor_optimizer.step()
@@ -157,7 +155,7 @@ class TD3Agent:
             for param, target_param in zip(self.critic2.parameters(), self.target_critic2.parameters()):
                 target_param.data.mul_(1.0 - self.tau).add_(self.tau * param.data)
 
-        return (critic1_loss.item() + critic2_loss.item()) / 2, None if actor_loss is None else actor_loss.item(), (
+        return critic_loss.item(), None if actor_loss is None else actor_loss.item(), (
             float(torch.min(q1, q2).mean().item())
         )
 
@@ -171,8 +169,6 @@ def train(args: argparse.Namespace):
     action_dim = int(env.action_space.shape[0])
     low = np.asarray(env.action_space.low, dtype=np.float32)
     high = np.asarray(env.action_space.high, dtype=np.float32)
-    action_center = (high + low) / 2.0
-    action_scale = (high - low) / 2.0
 
     # seeding
     random.seed(args.seed)
@@ -184,7 +180,7 @@ def train(args: argparse.Namespace):
     torch.backends.cudnn.benchmark = False
 
     buffer = ReplayBuffer(args.buffer_size)
-    agent = TD3Agent(obs_shape, action_dim, action_center, action_scale, args)
+    agent = TD3Agent(obs_shape, action_dim, low, high, args)
 
     writer = SummaryWriter(f"runs/{run_name}")
     # log hyperparameters
