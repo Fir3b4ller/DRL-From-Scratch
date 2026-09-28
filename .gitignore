@@ -198,6 +198,9 @@ events.out.tfevents.*
 # Personal notes (not for public release)
 面经.md
 
+# Scratch / temporary test scripts
+test.py
+
 # Checkpoint / model files
 *.pt
 *.pth
