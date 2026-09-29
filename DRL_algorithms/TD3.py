@@ -16,6 +16,7 @@ def make_env(env_id: str, gamma, normalize: bool):
     def thunk() -> gym.Env:
         env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
+        env = gym.wrappers.ClipAction(env)
         if normalize:
             env = gym.wrappers.NormalizeObservation(env)
             env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10))
@@ -26,57 +27,41 @@ def make_env(env_id: str, gamma, normalize: bool):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="SAC")
-    parser.add_argument("--exp_name", type=str, default="SAC")
-    parser.add_argument("--env", type=str, default="LunarLanderContinuous-v2")
+    parser = argparse.ArgumentParser(description="TD3")
+    parser.add_argument("--exp_name", type=str, default="TD3")
+    parser.add_argument("--env", type=str, default="Pendulum-v1")
     # Pendulum-v1, LunarLanderContinuous-v2, BipedalWalker-v3, Walker2d-v4, HalfCheetah-v4, Ant-v4, Swimmer-v4, Hopper-v4
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--total_timesteps", type=int, default=1000000)
-    parser.add_argument("--buffer_size", type=int, default=200000)
+    parser.add_argument("--total_timesteps", type=int, default=100000)
+    parser.add_argument("--buffer_size", type=int, default=10000)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--tau", type=float, default=0.005)
-    parser.add_argument("--q_lr", type=float, default=1e-3)
-    parser.add_argument("--policy_lr", type=float, default=3e-4)
-    parser.add_argument("--alpha", type=float, default=0.2)
-    parser.add_argument("--auto_tune_alpha", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--learning_starts", type=int, default=25000)
+    parser.add_argument("--exploration_noise", type=float, default=0.1)
+    parser.add_argument("--policy_noise", type=float, default=0.2)
+    parser.add_argument("--noise_clip", type=float, default=0.5)
+    parser.add_argument("--learning_starts", type=int, default=10000)
     parser.add_argument("--train_freq", type=int, default=1)
-    parser.add_argument("--policy_frequency", type=int, default=2)
-    parser.add_argument("--target_network_frequency", type=int, default=1)
+    parser.add_argument("--policy_freq", type=int, default=2)
     parser.add_argument("--normalize", action=argparse.BooleanOptionalAction, default=False)
     return parser.parse_args()
 
 
 class ActorNetwork(nn.Module):
-    def __init__(self, obs_dim: int, action_dim: int, log_std_min: float = -5.0, log_std_max: float = 2.0):
+    def __init__(self, obs_dim: int, action_dim: int):
         super().__init__()
-        self.log_std_min = log_std_min
-        self.log_std_max = log_std_max
-        self.shared = nn.Sequential(
+        self.network = nn.Sequential(
             nn.Linear(obs_dim, 256),
             nn.ReLU(),
             nn.Linear(256, 256),
             nn.ReLU(),
+            nn.Linear(256, action_dim),
+            nn.Tanh(),
         )
-        self.mean = nn.Linear(256, action_dim)
-        self.log_std = nn.Linear(256, action_dim)
 
-    def forward(self, x: torch.Tensor):
-        h = self.shared(x)
-        log_std = self.log_std(h).clamp(self.log_std_min, self.log_std_max)
-        return self.mean(h), log_std
-
-    def get_action(self, x: torch.Tensor):
-        """reparameterized sample"""
-        mean, log_std = self.forward(x)
-        std = log_std.exp()
-        u = mean + std * torch.randn_like(mean)
-        action = torch.tanh(u)
-        # Jacobian correction
-        dist = torch.distributions.Normal(mean, std)
-        log_prob = dist.log_prob(u).sum(-1) - torch.log(1.0 - action.pow(2) + 1e-7).sum(-1)
-        return action, log_prob
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.network(x)
 
 
 class CriticNetwork(nn.Module):
@@ -94,7 +79,7 @@ class CriticNetwork(nn.Module):
         return self.network(torch.cat([x, a], dim=-1)).squeeze(-1)
 
 
-class SACAgent:
+class TD3Agent:
     def __init__(self, obs_shape, action_dim: int, action_low, action_high, args: argparse.Namespace):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.action_low = torch.as_tensor(action_low, dtype=torch.float32, device=self.device)
@@ -103,47 +88,48 @@ class SACAgent:
         self.action_scale = (self.action_high - self.action_low) / 2.0
         self.gamma = args.gamma
         self.tau = args.tau
-        self.auto_tune_alpha = args.auto_tune_alpha
-        self.target_entropy = -action_dim
+        self.exploration_noise = args.exploration_noise
+        self.policy_noise = args.policy_noise
+        self.noise_clip = args.noise_clip
 
         obs_dim = int(np.array(obs_shape).prod())
         self.actor = ActorNetwork(obs_dim, action_dim).to(self.device)
         self.critic1 = CriticNetwork(obs_dim, action_dim).to(self.device)
         self.critic2 = CriticNetwork(obs_dim, action_dim).to(self.device)
+        self.target_actor = ActorNetwork(obs_dim, action_dim).to(self.device)
         self.target_critic1 = CriticNetwork(obs_dim, action_dim).to(self.device)
         self.target_critic2 = CriticNetwork(obs_dim, action_dim).to(self.device)
+        self.target_actor.load_state_dict(self.actor.state_dict())
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2.load_state_dict(self.critic2.state_dict())
 
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=args.policy_lr)
-        self.critic_optimizer = torch.optim.Adam(list(self.critic1.parameters()) + list(self.critic2.parameters()), lr=args.q_lr)
-        self.policy_frequency = args.policy_frequency
-        self.target_network_frequency = args.target_network_frequency
-        # entropy coefficient
-        if self.auto_tune_alpha:
-            self.log_alpha = nn.Parameter(torch.tensor(np.log(args.alpha), dtype=torch.float32, device=self.device))
-            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=args.q_lr)
-        else:
-            self.log_alpha = torch.tensor(np.log(args.alpha), dtype=torch.float32, device=self.device)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=args.lr)
+        self.critic_optimizer = torch.optim.Adam(list(self.critic1.parameters()) + list(self.critic2.parameters()), lr=args.lr)
 
     @torch.no_grad()
     def select_action(self, obs: np.ndarray):
+        """deterministic policy + Gaussian exploration noise"""
         obs_t = torch.as_tensor(np.asarray(obs), dtype=torch.float32, device=self.device).unsqueeze(0)
-        u = self.actor.get_action(obs_t)[0]
-        action = self.action_center + u * self.action_scale
+        action = self.actor(obs_t)
+        action = self.action_center + action * self.action_scale
+        action += torch.randn_like(action) * self.action_scale * self.exploration_noise
+        action = torch.clamp(action, self.action_low, self.action_high)
         return action.cpu().numpy().squeeze(0)
 
-    def update(self, batch, update_actor: bool, update_target: bool):
+    def update(self, batch, update_actor: bool):
         s, a, r, s_, done = [t.to(self.device) for t in batch]
-        alpha = self.log_alpha.exp()
 
-        # critic
+        # twin critic target
         with torch.no_grad():
-            next_a, next_log_prob = self.actor.get_action(s_)
-            next_a_scaled = self.action_center + next_a * self.action_scale
-            next_q = torch.min(self.target_critic1(s_, next_a_scaled), self.target_critic2(s_, next_a_scaled))
-            target_q = r + self.gamma * (1.0 - done) * (next_q - alpha * next_log_prob)
+            next_action = self.action_center + self.target_actor(s_) * self.action_scale
+            noise = torch.randn_like(next_action) * self.policy_noise
+            noise = torch.clamp(noise, -self.noise_clip, self.noise_clip)
+            next_action = torch.clamp(next_action + noise, self.action_low, self.action_high)
+            target_q = r + self.gamma * (1.0 - done) * torch.min(
+                self.target_critic1(s_, next_action), self.target_critic2(s_, next_action)
+            )
 
+        # critic loss
         q1 = self.critic1(s, a)
         q2 = self.critic2(s, a)
         critic1_loss = F.mse_loss(q1, target_q)
@@ -153,42 +139,36 @@ class SACAgent:
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        # actor + alpha
-        actor_loss = alpha_loss = None
+        # delayed actor updates
+        actor_loss = None
         if update_actor:
-            pi_a, pi_log_prob = self.actor.get_action(s)
-            pi_a_scaled = self.action_center + pi_a * self.action_scale
-            actor_loss = (alpha.detach() * pi_log_prob - torch.min(self.critic1(s, pi_a_scaled), self.critic2(s, pi_a_scaled))).mean()
+            actor_loss = -self.critic1(s, self.action_center + self.actor(s) * self.action_scale).mean()
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
             self.actor_optimizer.step()
 
-            if self.auto_tune_alpha:
-                alpha_loss = (-alpha * (pi_log_prob + self.target_entropy).detach()).mean()
-                self.alpha_optimizer.zero_grad()
-                alpha_loss.backward()
-                self.alpha_optimizer.step()
-
-        # soft update
-        if update_target:
+            # soft update all target networks
+            for param, target_param in zip(self.actor.parameters(), self.target_actor.parameters()):
+                target_param.data.mul_(1.0 - self.tau).add_(self.tau * param.data)
             for param, target_param in zip(self.critic1.parameters(), self.target_critic1.parameters()):
                 target_param.data.mul_(1.0 - self.tau).add_(self.tau * param.data)
             for param, target_param in zip(self.critic2.parameters(), self.target_critic2.parameters()):
                 target_param.data.mul_(1.0 - self.tau).add_(self.tau * param.data)
 
-        return critic_loss.item(), actor_loss, float(torch.min(q1, q2).mean().item()), alpha_loss
+        return critic_loss.item(), None if actor_loss is None else actor_loss.item(), (
+            float(torch.min(q1, q2).mean().item())
+        )
 
 
 def train(args: argparse.Namespace):
     env = make_env(args.env, args.gamma, args.normalize)()
     run_name = f"{args.env}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    assert isinstance(env.action_space, gym.spaces.Box), "SAC only supports continuous action spaces"
+    assert isinstance(env.action_space, gym.spaces.Box), "TD3 only supports continuous action spaces"
 
     obs_shape = env.observation_space.shape
-    action_space = env.action_space
-    action_dim = int(action_space.shape[0])
-    low = np.asarray(action_space.low, dtype=np.float32)
-    high = np.asarray(action_space.high, dtype=np.float32)
+    action_dim = int(env.action_space.shape[0])
+    low = np.asarray(env.action_space.low, dtype=np.float32)
+    high = np.asarray(env.action_space.high, dtype=np.float32)
 
     # seeding
     random.seed(args.seed)
@@ -200,7 +180,7 @@ def train(args: argparse.Namespace):
     torch.backends.cudnn.benchmark = False
 
     buffer = ReplayBuffer(args.buffer_size)
-    agent = SACAgent(obs_shape, action_dim, low, high, args)
+    agent = TD3Agent(obs_shape, action_dim, low, high, args)
 
     writer = SummaryWriter(f"runs/{run_name}")
     # log hyperparameters
@@ -214,10 +194,7 @@ def train(args: argparse.Namespace):
     last_log_step = 0
 
     while global_step < args.total_timesteps:
-        if global_step < args.learning_starts:
-            action = action_space.sample()  # random policy for initial exploration
-        else:
-            action = agent.select_action(obs)
+        action = agent.select_action(obs)
         next_obs, reward, terminated, truncated, info = env.step(action)
         buffer.add((obs, action, reward, next_obs, terminated))
         obs = next_obs
@@ -242,17 +219,14 @@ def train(args: argparse.Namespace):
 
         # optimize the model
         if global_step >= args.learning_starts and global_step % args.train_freq == 0:
-            update_actor = global_step % agent.policy_frequency == 0
-            update_target = global_step % agent.target_network_frequency == 0
-            critic_loss, actor_loss, mean_q, alpha_loss = agent.update(buffer.sample(args.batch_size), update_actor, update_target)
+            critic_loss, actor_loss, mean_q = agent.update(
+                buffer.sample(args.batch_size), global_step % args.policy_freq == 0
+            )
             if global_step % 100 == 0:
                 writer.add_scalar("loss/critic_loss", critic_loss, global_step)
                 writer.add_scalar("loss/q_value", mean_q, global_step)
                 if actor_loss is not None:
-                    writer.add_scalar("loss/actor_loss", actor_loss.item(), global_step)
-                if alpha_loss is not None:
-                    writer.add_scalar("loss/alpha_loss", alpha_loss.item(), global_step)
-                    writer.add_scalar("charts/alpha", agent.log_alpha.exp().item(), global_step)
+                    writer.add_scalar("loss/actor_loss", actor_loss, global_step)
 
     writer.close()
     env.close()

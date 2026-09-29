@@ -15,16 +15,16 @@ from rl_utils import ReplayBuffer, linear_schedule
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="DDQN")
     parser.add_argument("--exp_name", type=str, default="DDQN")
-    parser.add_argument("--env", type=str, default="MountainCar-v0") # CartPole-v1, LunarLander-v2, Acrobot-v1, MountainCar-v0
+    parser.add_argument("--env", type=str, default="CartPole-v1") # CartPole-v1, LunarLander-v2, Acrobot-v1, MountainCar-v0
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--total_timesteps", type=int, default=1000000)
-    parser.add_argument("--buffer_size", type=int, default=100000)
-    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--total_timesteps", type=int, default=500000)
+    parser.add_argument("--buffer_size", type=int, default=10000)
+    parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lr", type=float, default=2.5e-4)
     parser.add_argument("--epsilon_start", type=float, default=1.0)
     parser.add_argument("--epsilon_end", type=float, default=0.01)
-    parser.add_argument("--epsilon_decay_steps", type=int, default=10000)
+    parser.add_argument("--epsilon_decay_steps", type=int, default=200000)
     parser.add_argument("--learning_starts", type=int, default=10000)
     parser.add_argument("--train_freq", type=int, default=4)
     parser.add_argument("--target_qnet_update_freq", type=int, default=500)

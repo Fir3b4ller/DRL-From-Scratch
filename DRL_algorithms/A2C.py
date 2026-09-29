@@ -15,19 +15,20 @@ def make_env(env_id: str):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Actor-Critic")
-    parser.add_argument("--exp_name", type=str, default="Actor-Critic")
-    parser.add_argument("--env", type=str, default="Acrobot-v1") # CartPole-v1, LunarLander-v2, Acrobot-v1
+    parser = argparse.ArgumentParser(description="A2C")
+    parser.add_argument("--exp_name", type=str, default="A2C")
+    parser.add_argument("--env", type=str, default="CartPole-v1") # CartPole-v1, LunarLander-v2, Acrobot-v1
     parser.add_argument("--num_envs", type=int, default=16)
-    parser.add_argument("--num_steps", type=int, default=8)
+    parser.add_argument("--num_steps", type=int, default=16)
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--total_timesteps", type=int, default=1000000)
-    parser.add_argument("--gamma", type=float, default=0.995)
-    parser.add_argument("--lr", type=float, default=2.5e-4)
-    parser.add_argument("--ent_coef", type=float, default=0.1)
+    parser.add_argument("--total_timesteps", type=int, default=10000000)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--ent_coef", type=float, default=0.01)
     parser.add_argument("--vf_coef", type=float, default=0.5)
     parser.add_argument("--max_grad_norm", type=float, default=0.5)
     parser.add_argument("--anneal_lr", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--gae_lambda", type=float, default=0.95)
     return parser.parse_args()
 
 
@@ -61,12 +62,13 @@ class CriticNetwork(nn.Module):
         return self.network(x).squeeze(-1)
 
 
-class ActorCriticAgent:
+class A2CAgent:
     def __init__(self, obs_shape, action_dim: int, args: argparse.Namespace):
         self.gamma = args.gamma
         self.ent_coef = args.ent_coef
         self.vf_coef = args.vf_coef
         self.max_grad_norm = args.max_grad_norm
+        self.gae_lambda = args.gae_lambda
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         obs_dim = int(np.array(obs_shape).prod())
@@ -87,9 +89,9 @@ class ActorCriticAgent:
         for group in self.optimizer.param_groups:
             group["lr"] = lr
 
-    def update(self, obs, actions, rewards, next_obs, dones):
+    def update(self, obs, actions, rewards, dones, last_obs):
+        num_steps, num_envs = obs.shape[0], obs.shape[1]
         s = torch.as_tensor(np.asarray(obs), dtype=torch.float32, device=self.device)
-        s_next = torch.as_tensor(np.asarray(next_obs), dtype=torch.float32, device=self.device)
         a = torch.as_tensor(np.asarray(actions), dtype=torch.long, device=self.device)
         r = torch.as_tensor(np.asarray(rewards), dtype=torch.float32, device=self.device)
         done = torch.as_tensor(np.asarray(dones), dtype=torch.float32, device=self.device)
@@ -98,12 +100,24 @@ class ActorCriticAgent:
         dist = torch.distributions.Categorical(logits=logits)
         log_probs = dist.log_prob(a)
         entropy = dist.entropy().mean()
+        values = self.critic(s)
 
-        v_next = self.critic(s_next).detach()
-        td_delta = r + self.gamma * v_next * (1.0 - done) - self.critic(s)
+        # GAE advantage
+        with torch.no_grad():
+            s_last = torch.as_tensor(np.asarray(last_obs), dtype=torch.float32, device=self.device)
+            next_value = self.critic(s_last)
+            advantage = torch.zeros_like(r)
+            gae = torch.zeros_like(next_value)
+            for t in reversed(range(num_steps)):
+                v_next = next_value if t == num_steps - 1 else values[t + 1]
+                delta = r[t] + self.gamma * v_next * (1.0 - done[t]) - values[t]
+                gae = delta + self.gamma * self.gae_lambda * (1.0 - done[t]) * gae
+                advantage[t] = gae
+            returns = (advantage + values).detach()
+            advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
 
-        actor_loss = -(log_probs * td_delta.detach()).mean()
-        critic_loss = 0.5 * td_delta.pow(2).mean()
+        actor_loss = -(log_probs * advantage.detach()).mean()
+        critic_loss = 0.5 * (returns - values).pow(2).mean()
         loss = actor_loss + self.vf_coef * critic_loss - self.ent_coef * entropy
 
         self.optimizer.zero_grad()
@@ -130,7 +144,7 @@ def train(args: argparse.Namespace) -> None:
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = True
 
-    agent = ActorCriticAgent(obs_shape, action_dim, args)
+    agent = A2CAgent(obs_shape, action_dim, args)
 
     writer = SummaryWriter(f"runs/{run_name}")
     # log hyperparameters
@@ -147,7 +161,7 @@ def train(args: argparse.Namespace) -> None:
 
     while global_step < args.total_timesteps:
         rollout_obs, rollout_actions = [], []
-        rollout_rewards, rollout_next_obs, rollout_dones = [], [], []
+        rollout_rewards, rollout_dones = [], []
 
         for _ in range(args.num_steps):
             actions = agent.select_actions(obs)
@@ -157,7 +171,6 @@ def train(args: argparse.Namespace) -> None:
             rollout_obs.append(obs.copy())
             rollout_actions.append(actions)
             rollout_rewards.append(rewards)
-            rollout_next_obs.append(next_obs)
             rollout_dones.append(dones)
 
             for i in range(args.num_envs):
@@ -194,8 +207,8 @@ def train(args: argparse.Namespace) -> None:
             np.stack(rollout_obs),
             np.stack(rollout_actions),
             np.stack(rollout_rewards),
-            np.stack(rollout_next_obs),
             np.stack(rollout_dones),
+            obs,
         )
         writer.add_scalar("loss/actor_loss", actor_loss, global_step)
         writer.add_scalar("loss/critic_loss", critic_loss, global_step)

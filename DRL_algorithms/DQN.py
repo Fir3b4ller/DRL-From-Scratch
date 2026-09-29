@@ -13,19 +13,19 @@ from rl_utils import ReplayBuffer, linear_schedule
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Dueling DQN")
-    parser.add_argument("--exp_name", type=str, default="Dueling-DQN")
-    parser.add_argument("--env", type=str, default="LunarLander-v2") # CartPole-v1, LunarLander-v2, Acrobot-v1, MountainCar-v0
+    parser = argparse.ArgumentParser(description="DQN")
+    parser.add_argument("--exp_name", type=str, default="DQN")
+    parser.add_argument("--env", type=str, default="CartPole-v1") # CartPole-v1, LunarLander-v2, Acrobot-v1, MountainCar-v0
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--total_timesteps", type=int, default=2000000)
-    parser.add_argument("--buffer_size", type=int, default=100000)
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--total_timesteps", type=int, default=500000)
+    parser.add_argument("--buffer_size", type=int, default=10000)
+    parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lr", type=float, default=2.5e-4)
     parser.add_argument("--epsilon_start", type=float, default=1.0)
     parser.add_argument("--epsilon_end", type=float, default=0.01)
-    parser.add_argument("--epsilon_decay_steps", type=int, default=250000)
-    parser.add_argument("--learning_starts", type=int, default=50000)
+    parser.add_argument("--epsilon_decay_steps", type=int, default=200000)
+    parser.add_argument("--learning_starts", type=int, default=10000)
     parser.add_argument("--train_freq", type=int, default=4)
     parser.add_argument("--target_qnet_update_freq", type=int, default=500)
     parser.add_argument("--tau", type=float, default=1.0)
@@ -33,28 +33,23 @@ def parse_args() -> argparse.Namespace:
 
 
 class QNetwork(nn.Module):
-    """Dueling DQN"""
     def __init__(self, env):
         super().__init__()
         obs_dim = int(np.array(env.observation_space.shape).prod())
         action_dim = int(env.action_space.n)
-        self.feature = nn.Sequential(
+        self.network = nn.Sequential(
             nn.Linear(obs_dim, 120),
             nn.ReLU(),
             nn.Linear(120, 84),
             nn.ReLU(),
+            nn.Linear(84, action_dim),
         )
-        self.value = nn.Linear(84, 1)
-        self.advantage = nn.Linear(84, action_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        feat = self.feature(x)
-        v = self.value(feat)
-        a = self.advantage(feat)
-        return v + (a - a.mean(dim=1, keepdim=True))
+        return self.network(x)
 
 
-class DuelingDQNAgent:
+class DQNAgent:
     def __init__(self, env, args: argparse.Namespace):
         self.action_dim = int(env.action_space.n)
         self.gamma = args.gamma
@@ -105,7 +100,7 @@ def train(args: argparse.Namespace) -> None:
     torch.backends.cudnn.benchmark = False
 
     buffer = ReplayBuffer(args.buffer_size)
-    agent = DuelingDQNAgent(env, args)
+    agent = DQNAgent(env, args)
     epsilon_schedule = linear_schedule(args.epsilon_start, args.epsilon_end,
                                        args.epsilon_decay_steps)
 

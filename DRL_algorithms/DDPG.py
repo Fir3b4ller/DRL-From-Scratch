@@ -29,11 +29,11 @@ def make_env(env_id: str, gamma, normalize: bool):
 def parse_args():
     parser = argparse.ArgumentParser(description="DDPG")
     parser.add_argument("--exp_name", type=str, default="DDPG")
-    parser.add_argument("--env", type=str, default="LunarLanderContinuous-v2")
+    parser.add_argument("--env", type=str, default="Pendulum-v1")
     # Pendulum-v1, LunarLanderContinuous-v2, BipedalWalker-v3, Walker2d-v4, HalfCheetah-v4, Ant-v4, Swimmer-v4, Hopper-v4
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--total_timesteps", type=int, default=1000000)
-    parser.add_argument("--buffer_size", type=int, default=200000)
+    parser.add_argument("--buffer_size", type=int, default=10000)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lr", type=float, default=3e-4)

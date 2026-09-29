@@ -8,50 +8,40 @@ import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 
 
-def make_env(env_id: str, gamma, normalize: bool):
+def make_env(env_id: str):
     def thunk() -> gym.Env:
         env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        env = gym.wrappers.ClipAction(env)
-        if normalize:
-            env = gym.wrappers.NormalizeObservation(env)
-            env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10))
-            env = gym.wrappers.NormalizeReward(env, gamma=gamma)
-            env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
         return env
     return thunk
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="PPO-continuous")
-    parser.add_argument("--exp_name", type=str, default="PPO-continuous")
-    parser.add_argument("--env", type=str, default="Hopper-v4")
-    # LunarLanderContinuous-v2, Pendulum-v1, BipedalWalker-v3, Walker2d-v4, HalfCheetah-v4, Ant-v4, Swimmer-v4, Hopper-v4
-    parser.add_argument("--num_envs", type=int, default=1)
-    parser.add_argument("--num_steps", type=int, default=2048)
+    parser = argparse.ArgumentParser(description="PPO")
+    parser.add_argument("--exp_name", type=str, default="PPO")
+    parser.add_argument("--env", type=str, default="CartPole-v1") # CartPole-v1, LunarLander-v2, Acrobot-v1
+    parser.add_argument("--num_envs", type=int, default=4)
+    parser.add_argument("--num_steps", type=int, default=512)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--total_timesteps", type=int, default=1000000)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae_lambda", type=float, default=0.95)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--ent_coef", type=float, default=0.0)
+    parser.add_argument("--ent_coef", type=float, default=0.1)
     parser.add_argument("--vf_coef", type=float, default=0.5)
     parser.add_argument("--max_grad_norm", type=float, default=0.5)
-    parser.add_argument("--anneal_lr", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--normalize", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--anneal_lr", action=argparse.BooleanOptionalAction, default=False)
     # PPO specific
     parser.add_argument("--clip_eps", type=float, default=0.2)
     parser.add_argument("--vf_clip_eps", type=float, default=0.2)
-    parser.add_argument("--update_epochs", type=int, default=10)
-    parser.add_argument("--minibatch_size", type=int, default=64)
+    parser.add_argument("--update_epochs", type=int, default=4)
+    parser.add_argument("--minibatch_size", type=int, default=256)
     return parser.parse_args()
 
 
 class ActorNetwork(nn.Module):
     def __init__(self, obs_dim: int, action_dim: int):
         super().__init__()
-        self.action_dim = action_dim
-        self.log_std = nn.Parameter(torch.zeros(1, action_dim))
         self.network = nn.Sequential(
             nn.Linear(obs_dim, 120),
             nn.ReLU(),
@@ -79,11 +69,8 @@ class CriticNetwork(nn.Module):
         return self.network(x).squeeze(-1)
 
 
-class PPOContinuousAgent:
-    def __init__(self, obs_shape, action_dim: int, action_center, action_scale, args: argparse.Namespace):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.action_center = torch.as_tensor(action_center, dtype=torch.float32, device=self.device)
-        self.action_scale = torch.as_tensor(action_scale, dtype=torch.float32, device=self.device)
+class PPOAgent:
+    def __init__(self, obs_shape, action_dim: int, args: argparse.Namespace):
         self.gamma = args.gamma
         self.gae_lambda = args.gae_lambda
         self.clip_eps = args.clip_eps
@@ -93,6 +80,7 @@ class PPOContinuousAgent:
         self.ent_coef = args.ent_coef
         self.vf_coef = args.vf_coef
         self.max_grad_norm = args.max_grad_norm
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         obs_dim = int(np.array(obs_shape).prod())
         self.actor = ActorNetwork(obs_dim, action_dim).to(self.device)
@@ -101,34 +89,17 @@ class PPOContinuousAgent:
             list(self.actor.parameters()) + list(self.critic.parameters()), lr=args.lr
         )
 
-    def _log_prob(self, obs, actions):
-        mu = self.actor(obs)
-        dist = torch.distributions.Normal(
-            mu, self.actor.log_std.exp().expand_as(mu)
-        )
-        # invert action
-        a = (actions - self.action_center) / self.action_scale
-        a = torch.clamp(a, -1 + 1e-7, 1 - 1e-7)
-        z = a.atanh()
-        log_prob = dist.log_prob(z).sum(dim=-1)
-        log_prob -= torch.log(1.0 - a.pow(2) + 1e-7).sum(dim=-1)
-        return log_prob
-
     @torch.no_grad()
     def select_actions(self, obs: np.ndarray):
         obs_t = torch.as_tensor(np.asarray(obs), dtype=torch.float32, device=self.device)
-        mu = self.actor(obs_t)
-        dist = torch.distributions.Normal(
-            mu, self.actor.log_std.exp().expand_as(mu)
-        )
-        a = dist.sample().tanh()
-        action = self.action_center + a * self.action_scale
-        return action.cpu().numpy()
+        logits = self.actor(obs_t)
+        dist = torch.distributions.Categorical(logits=logits)
+        return dist.sample().cpu().numpy()
 
     def update(self, obs, actions, rewards, dones, last_obs):
         obs_t = torch.as_tensor(np.asarray(obs), dtype=torch.float32, device=self.device)
         last_obs_t = torch.as_tensor(np.asarray(last_obs), dtype=torch.float32, device=self.device)
-        action = torch.as_tensor(np.asarray(actions), dtype=torch.float32, device=self.device)
+        action = torch.as_tensor(np.asarray(actions), dtype=torch.long, device=self.device)
         reward = torch.as_tensor(np.asarray(rewards), dtype=torch.float32, device=self.device)
         done = torch.as_tensor(np.asarray(dones), dtype=torch.float32, device=self.device)
         num_steps = obs_t.shape[0]
@@ -150,10 +121,12 @@ class PPOContinuousAgent:
 
         # old policy for ratio computation
         with torch.no_grad():
-            old_log_prob = self._log_prob(obs_t, action)
+            logits_old = self.actor(obs_t)
+            dist_old = torch.distributions.Categorical(logits=logits_old)
+            old_log_prob = dist_old.log_prob(action)
 
         b_obs = obs_t.reshape(-1, obs_t.shape[-1])
-        b_actions = action.reshape(-1, action.shape[-1])
+        b_actions = action.reshape(-1)
         b_log_prob = old_log_prob.reshape(-1)
         b_returns = returns.reshape(-1)
         b_advantage = advantage.reshape(-1)
@@ -173,8 +146,10 @@ class PPOContinuousAgent:
                 mb_advantage = b_advantage[idx]
                 mb_values = b_values[idx]
 
-                log_prob = self._log_prob(mb_obs, mb_actions)
-                entropy = -log_prob.mean()
+                logits = self.actor(mb_obs)
+                dist = torch.distributions.Categorical(logits=logits)
+                log_prob = dist.log_prob(mb_actions)
+                entropy = dist.entropy().mean()
 
                 ratio = torch.exp(log_prob - mb_old_log_prob)
                 with torch.no_grad():
@@ -216,27 +191,22 @@ class PPOContinuousAgent:
 
 
 def train(args: argparse.Namespace):
-    envs = gym.vector.AsyncVectorEnv([make_env(args.env, args.gamma, args.normalize) for _ in range(args.num_envs)])
+    envs = gym.vector.AsyncVectorEnv([make_env(args.env) for _ in range(args.num_envs)])
     run_name = f"{args.env}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only supports continuous action spaces"
+    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only supports discrete action spaces"
 
     obs_shape = envs.single_observation_space.shape
-    action_dim = int(envs.single_action_space.shape[0])
-
-    low = np.asarray(envs.single_action_space.low, dtype=np.float32)
-    high = np.asarray(envs.single_action_space.high, dtype=np.float32)
-    action_center = (high + low) / 2.0
-    action_scale = (high - low) / 2.0
+    action_dim = int(envs.single_action_space.n)
 
     # seeding
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = True
 
-    agent = PPOContinuousAgent(obs_shape, action_dim, action_center, action_scale, args)
+    agent = PPOAgent(obs_shape, action_dim, args)
 
-    # log hyperparameters
     writer = SummaryWriter(f"runs/{run_name}")
+    # log hyperparameters
     hparams_rows = ["| parameters | value |", "|---|---|"] + \
         [f"| {k} | {v} |" for k, v in vars(args).items()]
     writer.add_text("hyperparameters", "\n".join(hparams_rows), global_step=0)

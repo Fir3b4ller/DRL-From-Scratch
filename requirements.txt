@@ -1,4 +1,19 @@
+# Core dependencies
 gymnasium==0.29.1
 numpy==1.24.4
 torch==2.4.1
 tensorboard==2.11.2
+
+# Environment-specific dependencies
+# Atari (DQN_CNN / BreakoutNoFrameskip-v4)
+ale-py==0.8.1
+AutoROM.accept-rom-license==0.6.1
+
+# Box2D (LunarLander-v2, LunarLanderContinuous-v2, BipedalWalker-v3)
+box2d-py==2.3.8
+
+# MuJoCo (Ant-v4, HalfCheetah-v4, Hopper-v4, Swimmer-v4, Walker2d-v4)
+mujoco==2.3.3
+
+# Optional: human rendering for classic-control environments
+pygame==2.1.0
